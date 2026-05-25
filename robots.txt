@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://feers77.github.io/iasql/sitemap.xml
