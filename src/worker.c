@@ -2,13 +2,13 @@
  * worker.c — the IA-SQL dispatcher background worker.
  *
  * One long-lived worker polls the ia_wiki.jobs queue and processes jobs one at
- * a time. Each job is claimed in its own transaction (FOR UPDATE SKIP LOCKED so
- * the design is safe even with multiple workers later), then processed, then the
- * result is written in a second transaction. This keeps transactions short and
- * never blocks the client that inserted the document.
- *
- * Phase 3: the "compile" step is a clearly-marked stub. Phase 4 replaces it with
- * a real call to an external OpenAI-compatible LLM.
+ * a time:
+ *   Tx1  claim a pending job (FOR UPDATE SKIP LOCKED) + read its document and
+ *        the current wiki context, then COMMIT (so no transaction is held open
+ *        during the slow network call);
+ *   HTTP call the external OpenAI-compatible LLM (no transaction);
+ *   Tx2  write the compiled pages/edges, telemetry, and mark the job done.
+ * Failures are recorded on the job row with a bounded retry.
  */
 #include "postgres.h"
 #include "fmgr.h"
@@ -28,15 +28,17 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
 #include "ia_sql.h"
+#include "http_client.h"
+#include "llm.h"
 
 /* ------------------------------------------------------------------ */
-/* SQL helpers                                                         */
+/* Small SQL helpers (run inside an open transaction with SPI)         */
 /* ------------------------------------------------------------------ */
 
-/* True if the ia_wiki schema (CREATE EXTENSION) has been installed yet. */
 static bool
 schema_present(void)
 {
@@ -54,7 +56,6 @@ schema_present(void)
 	return present;
 }
 
-/* Copy a (possibly NULL) text column out of the current SPI tuple into ctx. */
 static char *
 copy_col(MemoryContext ctx, HeapTuple tup, TupleDesc td, int col)
 {
@@ -71,7 +72,6 @@ copy_col(MemoryContext ctx, HeapTuple tup, TupleDesc td, int col)
 	return out;
 }
 
-/* Insert-or-update one wiki page, merging provenance. */
 static void
 upsert_page(const char *entity, const char *title, const char *markdown,
 			const char *summary, const char *doc_id_text)
@@ -81,10 +81,10 @@ upsert_page(const char *entity, const char *title, const char *markdown,
 	char		nulls[5] = {' ', ' ', ' ', ' ', ' '};
 
 	values[0] = CStringGetTextDatum(entity);
-	if (title)		values[1] = CStringGetTextDatum(title);		else nulls[1] = 'n';
-	if (markdown)	values[2] = CStringGetTextDatum(markdown);	else nulls[2] = 'n';
-	if (summary)	values[3] = CStringGetTextDatum(summary);	else nulls[3] = 'n';
-	if (doc_id_text) values[4] = CStringGetTextDatum(doc_id_text); else nulls[4] = 'n';
+	if (title)		 values[1] = CStringGetTextDatum(title);		else nulls[1] = 'n';
+	if (markdown)	 values[2] = CStringGetTextDatum(markdown);		else nulls[2] = 'n';
+	if (summary)	 values[3] = CStringGetTextDatum(summary);		else nulls[3] = 'n';
+	if (doc_id_text) values[4] = CStringGetTextDatum(doc_id_text);	else nulls[4] = 'n';
 
 	SPI_execute_with_args(
 		"INSERT INTO ia_wiki.compiled_pages "
@@ -101,7 +101,26 @@ upsert_page(const char *entity, const char *title, const char *markdown,
 		5, argtypes, values, nulls, false, 0);
 }
 
-/* Mark a job done. */
+static void
+upsert_edge(const char *src, const char *tgt, const char *rel, double weight)
+{
+	Oid			argtypes[4] = {TEXTOID, TEXTOID, TEXTOID, FLOAT8OID};
+	Datum		values[4];
+	char		nulls[4] = {' ', ' ', ' ', ' '};
+
+	values[0] = CStringGetTextDatum(src);
+	values[1] = CStringGetTextDatum(tgt);
+	if (rel) values[2] = CStringGetTextDatum(rel); else nulls[2] = 'n';
+	values[3] = Float8GetDatum(weight);
+
+	SPI_execute_with_args(
+		"INSERT INTO ia_wiki.entity_graph (source_entity, target_entity, relation, weight) "
+		"VALUES ($1, $2, COALESCE($3, 'related'), $4) "
+		"ON CONFLICT (source_entity, target_entity, relation) "
+		"DO UPDATE SET weight = EXCLUDED.weight",
+		4, argtypes, values, nulls, false, 0);
+}
+
 static void
 mark_done(int64 job_id)
 {
@@ -113,28 +132,47 @@ mark_done(int64 job_id)
 		1, argtypes, values, NULL, false, 0);
 }
 
-/* Record telemetry for one compilation. */
 static void
-log_processing(const char *doc_id_text, int64 job_id, const char *model, int latency_ms)
+log_processing(const char *doc_id_text, int64 job_id, const char *model,
+			   int prompt_tokens, int completion_tokens, int latency_ms)
 {
-	Oid			argtypes[4] = {TEXTOID, INT8OID, TEXTOID, INT4OID};
-	Datum		values[4];
-	char		nulls[4] = {' ', ' ', ' ', ' '};
+	Oid			argtypes[6] = {TEXTOID, INT8OID, TEXTOID, INT4OID, INT4OID, INT4OID};
+	Datum		values[6];
+	char		nulls[6] = {' ', ' ', ' ', ' ', ' ', ' '};
 
 	if (doc_id_text) values[0] = CStringGetTextDatum(doc_id_text); else nulls[0] = 'n';
 	values[1] = Int64GetDatum(job_id);
 	values[2] = CStringGetTextDatum(model);
-	values[3] = Int32GetDatum(latency_ms);
+	values[3] = Int32GetDatum(prompt_tokens);
+	values[4] = Int32GetDatum(completion_tokens);
+	values[5] = Int32GetDatum(latency_ms);
 
 	SPI_execute_with_args(
-		"INSERT INTO ia_wiki.processing_log (doc_id, job_id, model, latency_ms) "
-		"VALUES ($1::uuid, $2, $3, $4)",
-		4, argtypes, values, nulls, false, 0);
+		"INSERT INTO ia_wiki.processing_log "
+		"  (doc_id, job_id, model, prompt_tokens, completion_tokens, latency_ms) "
+		"VALUES ($1::uuid, $2, $3, $4, $5, $6)",
+		6, argtypes, values, nulls, false, 0);
 }
 
-/* On error: requeue (if attempts remain) or mark error. */
 static void
-mark_error(int64 job_id, const char *message)
+insert_flag(const char *page_entity, const char *severity, const char *description)
+{
+	Oid			argtypes[3] = {TEXTOID, TEXTOID, TEXTOID};
+	Datum		values[3];
+	char		nulls[3] = {' ', ' ', ' '};
+
+	values[0] = CStringGetTextDatum(page_entity);
+	if (severity) values[1] = CStringGetTextDatum(severity); else nulls[1] = 'n';
+	values[2] = CStringGetTextDatum(description);
+
+	SPI_execute_with_args(
+		"INSERT INTO ia_wiki.hallucination_flags (page_entity, severity, description) "
+		"VALUES ($1, CASE WHEN $2 IN ('low','medium','high') THEN $2 ELSE 'medium' END, $3)",
+		3, argtypes, values, nulls, false, 0);
+}
+
+static void
+mark_error_spi(int64 job_id, const char *message)
 {
 	Oid			argtypes[3] = {INT8OID, INT4OID, TEXTOID};
 	Datum		values[3];
@@ -153,14 +191,24 @@ mark_error(int64 job_id, const char *message)
 		3, argtypes, values, nulls, false, 0);
 }
 
+/* Record a job failure in its own transaction. */
+static void
+record_job_error(int64 job_id, const char *message)
+{
+	SetCurrentStatementStartTimestamp();
+	StartTransactionCommand();
+	SPI_connect();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	mark_error_spi(job_id, message);
+	SPI_finish();
+	PopActiveSnapshot();
+	CommitTransactionCommand();
+}
+
 /* ------------------------------------------------------------------ */
 /* Job processing                                                      */
 /* ------------------------------------------------------------------ */
 
-/*
- * Claim and process the next pending job. Returns true if a job was handled
- * (so the caller keeps looping), false if the queue is empty.
- */
 static bool
 process_one_job(MemoryContext jobctx)
 {
@@ -168,9 +216,10 @@ process_one_job(MemoryContext jobctx)
 	char	   *doc_id = NULL;
 	char	   *kind = NULL;
 	char	   *content = NULL;
+	char	   *wiki_ctx = NULL;
 	bool		claimed = false;
 
-	/* ---- Transaction 1: claim a pending job and fetch its document ---- */
+	/* ---- Tx1: claim a job, read its document and the wiki context ---- */
 	SetCurrentStatementStartTimestamp();
 	StartTransactionCommand();
 	SPI_connect();
@@ -181,7 +230,7 @@ process_one_job(MemoryContext jobctx)
 		SPI_finish();
 		PopActiveSnapshot();
 		CommitTransactionCommand();
-		return false;			/* extension not installed yet */
+		return false;
 	}
 
 	if (SPI_execute(
@@ -204,6 +253,15 @@ process_one_job(MemoryContext jobctx)
 		kind = copy_col(jobctx, tup, td, 3);
 		content = copy_col(jobctx, tup, td, 4);
 		claimed = true;
+
+		if (kind && strcmp(kind, "ingest") == 0 &&
+			SPI_execute(
+				"SELECT COALESCE(string_agg('- ' || page_entity || ': ' "
+				"  || COALESCE(summary,''), E'\n'), '') "
+				"FROM (SELECT page_entity, summary FROM ia_wiki.compiled_pages "
+				"      ORDER BY last_compiled DESC LIMIT 50) s",
+				true, 1) == SPI_OK_SELECT && SPI_processed == 1)
+			wiki_ctx = copy_col(jobctx, SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1);
 	}
 
 	SPI_finish();
@@ -213,76 +271,175 @@ process_one_job(MemoryContext jobctx)
 	if (!claimed)
 		return false;
 
-	/* ---- Transaction 2: process + write result (with error handling) ---- */
-	PG_TRY();
+	/* ---- ingest: call the LLM, then write the result ---- */
+	if (kind && strcmp(kind, "ingest") == 0)
 	{
-		SetCurrentStatementStartTimestamp();
-		StartTransactionCommand();
-		SPI_connect();
-		PushActiveSnapshot(GetTransactionSnapshot());
-
-		if (kind && strcmp(kind, "ingest") == 0)
-		{
-			/* ===== Phase 3 STUB compiler (replaced by the LLM in Phase 4) ===== */
-			StringInfoData md;
-			char		entity[64];
-			char	   *title;
-			char	   *summary;
-
-			snprintf(entity, sizeof(entity), "stub-%lld", (long long) job_id);
-
-			initStringInfo(&md);
-			appendStringInfoString(&md,
-				"**(stub compilation — Phase 3, no LLM yet)**\n\n");
-			appendStringInfoString(&md, content ? content : "(empty document)");
-
-			title = pnstrdup(content ? content : "(empty)",
-							 content ? Min(60, (int) strlen(content)) : 7);
-			summary = pnstrdup(content ? content : "(empty)",
-							   content ? Min(160, (int) strlen(content)) : 7);
-
-			upsert_page(entity, title, md.data, summary, doc_id);
-			log_processing(doc_id, job_id, "(stub)", 0);
-			pfree(md.data);
-		}
-		/* 'lint' handled in Phase 5 */
-
-		mark_done(job_id);
-
-		SPI_finish();
-		PopActiveSnapshot();
-		CommitTransactionCommand();
-	}
-	PG_CATCH();
-	{
-		ErrorData  *ed;
+		LlmResult	r;
+		char	   *err = NULL;
+		TimestampTz t0;
+		int			latency_ms;
+		bool		ok;
 
 		MemoryContextSwitchTo(jobctx);
-		ed = CopyErrorData();
-		FlushErrorState();
-		AbortOutOfAnyTransaction();
+		t0 = GetCurrentTimestamp();
+		ok = ia_llm_ingest(doc_id, content, wiki_ctx, &r, &err);
+		latency_ms = (int) ((GetCurrentTimestamp() - t0) / 1000);
 
-		/* Record the failure in a fresh transaction. */
+		if (!ok)
+		{
+			record_job_error(job_id, err ? err : "ingest failed");
+			ereport(LOG, (errmsg("ia_sql: ingest job %lld failed: %s",
+								 (long long) job_id, err ? err : "?")));
+			return true;
+		}
+
+		PG_TRY();
+		{
+			int			i;
+
+			SetCurrentStatementStartTimestamp();
+			StartTransactionCommand();
+			SPI_connect();
+			PushActiveSnapshot(GetTransactionSnapshot());
+
+			for (i = 0; i < r.n_pages; i++)
+				upsert_page(r.pages[i].entity, r.pages[i].title,
+							r.pages[i].markdown, r.pages[i].summary, doc_id);
+			for (i = 0; i < r.n_edges; i++)
+				upsert_edge(r.edges[i].source, r.edges[i].target,
+							r.edges[i].relation, r.edges[i].weight);
+
+			log_processing(doc_id, job_id, ia_sql_llm_model,
+						   r.prompt_tokens, r.completion_tokens, latency_ms);
+			mark_done(job_id);
+
+			SPI_finish();
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+
+			ereport(LOG, (errmsg("ia_sql: ingest job %lld -> %d page(s), %d edge(s), "
+								 "%dms, tokens %d/%d",
+								 (long long) job_id, r.n_pages, r.n_edges,
+								 latency_ms, r.prompt_tokens, r.completion_tokens)));
+		}
+		PG_CATCH();
+		{
+			ErrorData  *ed;
+
+			MemoryContextSwitchTo(jobctx);
+			ed = CopyErrorData();
+			FlushErrorState();
+			AbortOutOfAnyTransaction();
+			record_job_error(job_id, ed->message);
+			ereport(LOG, (errmsg("ia_sql: writing ingest job %lld failed: %s",
+								 (long long) job_id, ed->message)));
+			FreeErrorData(ed);
+		}
+		PG_END_TRY();
+	}
+	/* ---- lint: audit a page against its sources ---- */
+	else if (kind && strcmp(kind, "lint") == 0)
+	{
+		LlmResult	r;
+		char	   *err = NULL;
+		char	   *page_entity = NULL;
+		char	   *page_md = NULL;
+		char	   *sources = NULL;
+		bool		ok;
+		bool		have_page = false;
+
+		/* The lint job's target page_entity travels in payload->>'page_entity'. */
 		SetCurrentStatementStartTimestamp();
 		StartTransactionCommand();
 		SPI_connect();
 		PushActiveSnapshot(GetTransactionSnapshot());
-		mark_error(job_id, ed->message);
+		if (SPI_execute_with_args(
+				"SELECT cp.page_entity, cp.markdown_body, "
+				"  COALESCE(string_agg(rd.content, E'\n---\n'), '') "
+				"FROM ia_wiki.jobs j "
+				"JOIN ia_wiki.compiled_pages cp ON cp.page_entity = j.payload->>'page_entity' "
+				"LEFT JOIN ia_wiki.raw_documents rd ON rd.doc_id = ANY(cp.source_doc_ids) "
+				"WHERE j.job_id = $1 GROUP BY cp.page_entity, cp.markdown_body",
+				1, (Oid[]){INT8OID}, (Datum[]){Int64GetDatum(job_id)}, NULL,
+				true, 1) == SPI_OK_SELECT && SPI_processed == 1)
+		{
+			page_entity = copy_col(jobctx, SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1);
+			page_md = copy_col(jobctx, SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 2);
+			sources = copy_col(jobctx, SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 3);
+			have_page = true;
+		}
 		SPI_finish();
 		PopActiveSnapshot();
 		CommitTransactionCommand();
 
-		ereport(LOG,
-				(errmsg("ia_sql: job %lld failed: %s",
-						(long long) job_id, ed->message)));
-		FreeErrorData(ed);
+		if (!have_page)
+		{
+			/* nothing to audit (page gone) — just close the job */
+			SetCurrentStatementStartTimestamp();
+			StartTransactionCommand();
+			SPI_connect();
+			PushActiveSnapshot(GetTransactionSnapshot());
+			mark_done(job_id);
+			SPI_finish();
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+			return true;
+		}
+
+		MemoryContextSwitchTo(jobctx);
+		ok = ia_llm_lint(page_entity, page_md, sources, &r, &err);
+		if (!ok)
+		{
+			record_job_error(job_id, err ? err : "lint failed");
+			return true;
+		}
+
+		PG_TRY();
+		{
+			int			i;
+
+			SetCurrentStatementStartTimestamp();
+			StartTransactionCommand();
+			SPI_connect();
+			PushActiveSnapshot(GetTransactionSnapshot());
+			for (i = 0; i < r.n_flags; i++)
+				insert_flag(page_entity, r.flags[i].severity, r.flags[i].description);
+			mark_done(job_id);
+			SPI_finish();
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+			ereport(LOG, (errmsg("ia_sql: lint job %lld -> %d flag(s) on '%s'",
+								 (long long) job_id, r.n_flags, page_entity)));
+		}
+		PG_CATCH();
+		{
+			ErrorData  *ed;
+
+			MemoryContextSwitchTo(jobctx);
+			ed = CopyErrorData();
+			FlushErrorState();
+			AbortOutOfAnyTransaction();
+			record_job_error(job_id, ed->message);
+			FreeErrorData(ed);
+		}
+		PG_END_TRY();
 	}
-	PG_END_TRY();
+	else
+	{
+		/* unknown kind: close it out so the queue does not stall */
+		SetCurrentStatementStartTimestamp();
+		StartTransactionCommand();
+		SPI_connect();
+		PushActiveSnapshot(GetTransactionSnapshot());
+		mark_done(job_id);
+		SPI_finish();
+		PopActiveSnapshot();
+		CommitTransactionCommand();
+	}
 
 	return true;
 }
 
-/* Process every pending job, then return. */
 static void
 process_pending_jobs(void)
 {
@@ -296,7 +453,6 @@ process_pending_jobs(void)
 	MemoryContextDelete(jobctx);
 }
 
-/* Reset jobs left 'running' by a previous (crashed) worker back to 'pending'. */
 static void
 requeue_stale_jobs(void)
 {
@@ -332,6 +488,7 @@ ia_sql_worker_main(Datum main_arg)
 	BackgroundWorkerUnblockSignals();
 
 	BackgroundWorkerInitializeConnection(ia_sql_database, NULL, 0);
+	ia_http_global_init();
 
 	ereport(LOG, (errmsg("ia_sql dispatcher started (db=%s)", ia_sql_database)));
 
@@ -356,6 +513,7 @@ ia_sql_worker_main(Datum main_arg)
 			process_pending_jobs();
 	}
 
+	ia_http_global_cleanup();
 	ereport(LOG, (errmsg("ia_sql dispatcher shutting down")));
 	proc_exit(0);
 }

@@ -21,6 +21,7 @@ extern char  *ia_sql_llm_model;           /* model name                       */
 extern int    ia_sql_llm_timeout_ms;      /* HTTP timeout                     */
 extern double ia_sql_llm_temperature;     /* sampling temperature             */
 extern int    ia_sql_llm_max_tokens;      /* max completion tokens            */
+extern char  *ia_sql_llm_extra_json;      /* extra request fields (merged)    */
 extern char  *ia_sql_wiki_system_prompt;  /* Layer 3: compiler directive      */
 extern char  *ia_sql_lint_system_prompt;  /* Layer 3: auditor directive       */
 extern int    ia_sql_max_attempts;        /* retries before a job errors out  */

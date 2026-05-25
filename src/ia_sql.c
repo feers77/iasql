@@ -45,7 +45,8 @@ char  *ia_sql_llm_api_key = NULL;
 char  *ia_sql_llm_model = NULL;
 int    ia_sql_llm_timeout_ms = 120000;
 double ia_sql_llm_temperature = 0.2;
-int    ia_sql_llm_max_tokens = 2048;
+int    ia_sql_llm_max_tokens = 4096;
+char  *ia_sql_llm_extra_json = NULL;
 char  *ia_sql_wiki_system_prompt = NULL;
 char  *ia_sql_lint_system_prompt = NULL;
 int    ia_sql_max_attempts = 3;
@@ -97,7 +98,14 @@ ia_sql_define_gucs(void)
 
 	DefineCustomIntVariable("ia_sql.llm_max_tokens",
 		"Max completion tokens / Máx. tokens de salida.",
-		NULL, &ia_sql_llm_max_tokens, 2048, 16, 131072,
+		NULL, &ia_sql_llm_max_tokens, 4096, 16, 131072,
+		PGC_SIGHUP, 0, NULL, NULL, NULL);
+
+	DefineCustomStringVariable("ia_sql.llm_extra_json",
+		"Extra JSON merged into each request, for provider-specific options "
+		"(e.g. {\"chat_template_kwargs\":{\"enable_thinking\":false}}) / JSON extra "
+		"fusionado en cada request, para opciones del proveedor.",
+		NULL, &ia_sql_llm_extra_json, "{}",
 		PGC_SIGHUP, 0, NULL, NULL, NULL);
 
 	DefineCustomStringVariable("ia_sql.wiki_system_prompt",
