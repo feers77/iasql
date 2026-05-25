@@ -21,6 +21,18 @@ import psycopg2
 
 GITHUB = "https://github.com/feers77/iasql"
 
+# Brand favicon (hexagon, indigo->cyan gradient on a dark tile). Single source of
+# truth: served at /favicon.svg and rasterised by viewer/build_favicon.py.
+FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
+    '<stop offset="0" stop-color="#7c7cf0"/><stop offset="1" stop-color="#22d3ee"/>'
+    '</linearGradient></defs>'
+    '<rect width="64" height="64" rx="14" fill="#0b0b16"/>'
+    '<polygon points="32,12 50,22 50,42 32,52 14,42 14,22" fill="url(#g)"/>'
+    '</svg>'
+)
+
 DB = dict(
     host=os.environ.get("PGHOST", "127.0.0.1"),
     port=os.environ.get("PGPORT", "5432"),
@@ -40,6 +52,7 @@ INNER = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
  :root{{color-scheme:light dark}}
  *{{box-sizing:border-box}}
@@ -92,6 +105,9 @@ LANDING = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 "programmingLanguage":["C","SQL","PL/pgSQL"],"runtimePlatform":"PostgreSQL 17",
 "license":"https://opensource.org/licenses/MIT","author":{"@type":"Organization","name":"IA-SQL contributors"}}
 </script>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <style>
  :root{--bg:#0b0b16;--fg:#ececf3;--mut:#a6a6c0;--acc:#7c7cf0;--acc2:#22d3ee;--card:#15162a;--line:#2a2b45;color-scheme:dark}
  *{box-sizing:border-box;margin:0;padding:0}
@@ -298,6 +314,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path == "/health":
                 return self._send(200, "ok", "text/plain")
+            if u.path == "/favicon.svg":
+                return self._send(200, FAVICON_SVG, "image/svg+xml")
             if u.path == "/stats.json":
                 return self._send(200, json.dumps(render_stats()),
                                   "application/json", cors=True)
