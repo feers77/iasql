@@ -152,3 +152,29 @@ COMMENT ON VIEW ia_wiki.pages IS 'Human-friendly listing of compiled wiki pages.
 CREATE FUNCTION ia_wiki.version() RETURNS text
     AS 'MODULE_PATHNAME', 'ia_sql_version' LANGUAGE C STRICT;
 COMMENT ON FUNCTION ia_wiki.version() IS 'IA-SQL engine version / versión del motor.';
+
+-- ----------------------------------------------------------------------------
+-- LINT SCHEDULING / PROGRAMACIÓN DEL LINT
+-- EN: Enqueue 'lint' jobs for the N least-recently-compiled pages. The worker
+--     audits each page against its source documents (Layer 1) and records any
+--     unsupported claim in ia_wiki.hallucination_flags. Schedule with pg_cron.
+-- ES: Encola jobs 'lint' para las N páginas compiladas hace más tiempo. El worker
+--     audita cada página contra sus documentos fuente (Capa 1) y registra toda
+--     afirmación no sustentada en ia_wiki.hallucination_flags. Programar con pg_cron.
+-- ----------------------------------------------------------------------------
+CREATE FUNCTION ia_wiki.enqueue_lint(sample integer DEFAULT 20)
+RETURNS integer LANGUAGE plpgsql AS $$
+DECLARE
+    n integer;
+BEGIN
+    INSERT INTO ia_wiki.jobs (kind, payload)
+    SELECT 'lint', jsonb_build_object('page_entity', page_entity)
+    FROM ia_wiki.compiled_pages
+    ORDER BY last_compiled ASC
+    LIMIT sample;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    PERFORM pg_notify('ia_sql_jobs', 'lint');
+    RETURN n;
+END $$;
+COMMENT ON FUNCTION ia_wiki.enqueue_lint(integer) IS
+    'Enqueue lint/audit jobs for the N oldest pages / Encola jobs de auditoría para las N páginas más antiguas.';
