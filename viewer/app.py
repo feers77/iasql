@@ -69,6 +69,29 @@ LANDING = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>IA-SQL — a self-compiling knowledge base inside PostgreSQL</title>
 <meta name="description" content="IA-SQL turns PostgreSQL into a self-compiling knowledge base: insert documents, an LLM compiles them into a maintained, audited Markdown wiki. Open source, MIT.">
+<link rel="canonical" href="https://feers77.github.io/iasql/">
+<meta name="robots" content="index,follow">
+<meta name="author" content="IA-SQL contributors">
+<meta name="keywords" content="PostgreSQL, LLM, RAG alternative, knowledge base, Karpathy LLM Wiki, pgvector, pg_cron, background worker, AI database extension">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="IA-SQL">
+<meta property="og:title" content="IA-SQL — a self-compiling knowledge base inside PostgreSQL">
+<meta property="og:description" content="Insert documents; an LLM compiles them into a maintained, cross-referenced, self-audited Markdown wiki — inside PostgreSQL. Open source, MIT.">
+<meta property="og:url" content="https://feers77.github.io/iasql/">
+<meta property="og:image" content="https://feers77.github.io/iasql/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="IA-SQL — a self-compiling knowledge base inside PostgreSQL">
+<meta name="twitter:description" content="Insert documents; an LLM compiles them into a maintained, self-audited Markdown wiki — inside PostgreSQL. Open source, MIT.">
+<meta name="twitter:image" content="https://feers77.github.io/iasql/og.png">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareSourceCode","name":"IA-SQL",
+"description":"A PostgreSQL extension that implements Karpathy's LLM Wiki pattern inside the database: documents are compiled by an LLM into a maintained, self-audited Markdown wiki.",
+"url":"https://feers77.github.io/iasql/","codeRepository":"https://github.com/feers77/iasql",
+"programmingLanguage":["C","SQL","PL/pgSQL"],"runtimePlatform":"PostgreSQL 17",
+"license":"https://opensource.org/licenses/MIT","author":{"@type":"Organization","name":"IA-SQL contributors"}}
+</script>
 <style>
  :root{--bg:#0b0b16;--fg:#ececf3;--mut:#a6a6c0;--acc:#7c7cf0;--acc2:#22d3ee;--card:#15162a;--line:#2a2b45;color-scheme:dark}
  *{box-sizing:border-box;margin:0;padding:0}

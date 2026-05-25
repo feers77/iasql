@@ -42,6 +42,16 @@ def build():
         f.write(h)
     print("wrote", out, "(%d bytes)" % len(h))
 
+    base = "https://feers77.github.io/iasql/"
+    with open(os.path.join(out_dir, "robots.txt"), "w") as f:
+        f.write("User-agent: *\nAllow: /\nSitemap: %ssitemap.xml\n" % base)
+    with open(os.path.join(out_dir, "sitemap.xml"), "w") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+                '  <url><loc>%s</loc><changefreq>weekly</changefreq>'
+                '<priority>1.0</priority></url>\n</urlset>\n' % base)
+    print("wrote robots.txt + sitemap.xml")
+
 
 if __name__ == "__main__":
     build()
