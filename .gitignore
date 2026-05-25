@@ -1,6 +1,10 @@
 # Secrets — never commit
 .env
 
+# Deployment-specific (contains this host's tailscale IP)
+viewer/*.live.service
+__pycache__/
+
 # Build artifacts
 *.o
 *.so

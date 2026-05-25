@@ -1,0 +1,21 @@
+# IA-SQL read-only wiki viewer (OPTIONAL) — systemd unit template.
+# Copy to /etc/systemd/system/, adjust paths/user, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now iasql-viewer
+[Unit]
+Description=IA-SQL read-only wiki viewer
+After=postgresql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=feres
+# .env provides PGHOST/PGPORT/PGDATABASE and IASQL_READER_USER/PASSWORD (chmod 600)
+EnvironmentFile=/home/feres/ia_sql/.env
+Environment=VIEWER_BIND=127.0.0.1
+Environment=VIEWER_PORT=8000
+ExecStart=/usr/bin/python3 /home/feres/ia_sql/viewer/app.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
