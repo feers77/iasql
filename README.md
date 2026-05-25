@@ -11,6 +11,7 @@ sources for hallucinations.
 > Status: **0.1 — working proof of concept.** Built and tested on PostgreSQL 17.
 > [Español aquí →](README.es.md)
 
+🌐 **Live demo: https://iasql.dev.feres.cl**
 📖 **New here? Start with the [tutorial by user profile](docs/TUTORIAL.md).**
 
 ---
