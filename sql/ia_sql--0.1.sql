@@ -124,8 +124,10 @@ COMMENT ON TABLE ia_wiki.hallucination_flags IS 'Lint findings: unsupported/cont
 -- EN: On a new document, enqueue an 'ingest' job and NOTIFY the worker.
 -- ES: Ante un documento nuevo, encola un job 'ingest' y NOTIFY al worker.
 -- ----------------------------------------------------------------------------
+-- SECURITY DEFINER so a least-privileged "ingestor" role (INSERT on
+-- raw_documents only) can enqueue jobs without direct rights on ia_wiki.jobs.
 CREATE OR REPLACE FUNCTION ia_wiki.enqueue_ingest() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, ia_wiki AS $$
 BEGIN
     INSERT INTO ia_wiki.jobs (doc_id, kind) VALUES (NEW.doc_id, 'ingest');
     PERFORM pg_notify('ia_sql_jobs', NEW.doc_id::text);
@@ -163,7 +165,8 @@ COMMENT ON FUNCTION ia_wiki.version() IS 'IA-SQL engine version / versión del m
 --     afirmación no sustentada en ia_wiki.hallucination_flags. Programar con pg_cron.
 -- ----------------------------------------------------------------------------
 CREATE FUNCTION ia_wiki.enqueue_lint(sample integer DEFAULT 20)
-RETURNS integer LANGUAGE plpgsql AS $$
+RETURNS integer LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = pg_catalog, ia_wiki AS $$
 DECLARE
     n integer;
 BEGIN
