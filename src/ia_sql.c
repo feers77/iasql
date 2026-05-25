@@ -73,7 +73,7 @@ ia_sql_define_gucs(void)
 
 	DefineCustomStringVariable("ia_sql.llm_base_url",
 		"OpenAI-compatible base URL / URL base OpenAI-compatible.",
-		NULL, &ia_sql_llm_base_url, "http://192.168.1.83:11435/v1",
+		NULL, &ia_sql_llm_base_url, "http://localhost:11434/v1",
 		PGC_SIGHUP, 0, NULL, NULL, NULL);
 
 	DefineCustomStringVariable("ia_sql.llm_api_key",
@@ -83,7 +83,7 @@ ia_sql_define_gucs(void)
 
 	DefineCustomStringVariable("ia_sql.llm_model",
 		"Model name / Nombre del modelo.",
-		NULL, &ia_sql_llm_model, "qwen3",
+		NULL, &ia_sql_llm_model, "qwen2.5",
 		PGC_SIGHUP, 0, NULL, NULL, NULL);
 
 	DefineCustomIntVariable("ia_sql.llm_timeout_ms",
