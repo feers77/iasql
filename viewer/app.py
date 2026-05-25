@@ -123,9 +123,9 @@ LANDING = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
   <a class="btn ghost" href="/wiki"><span class="en">Browse the live wiki →</span><span class="es">Explora la wiki en vivo →</span></a>
  </div>
  <div class="stats">
-  <div><b>__PAGES__</b><span class="en">pages compiled</span><span class="es">páginas compiladas</span></div>
-  <div><b>__DOCS__</b><span class="en">source documents</span><span class="es">documentos fuente</span></div>
-  <div><b>__EDGES__</b><span class="en">graph relations</span><span class="es">relaciones del grafo</span></div>
+  <div><b id="st-pages">__PAGES__</b><span class="en">pages compiled</span><span class="es">páginas compiladas</span></div>
+  <div><b id="st-docs">__DOCS__</b><span class="en">source documents</span><span class="es">documentos fuente</span></div>
+  <div><b id="st-edges">__EDGES__</b><span class="en">graph relations</span><span class="es">relaciones del grafo</span></div>
  </div>
 </div></div>
 
@@ -181,7 +181,7 @@ LANDING = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 </body></html>"""
 
 
-def render_landing():
+def render_stats():
     pages = docs = edges = 0
     try:
         with connect() as c, c.cursor() as cur:
@@ -193,10 +193,15 @@ def render_landing():
             docs = cur.fetchone()[0]
     except Exception:
         pass
+    return {"pages": pages, "docs": docs, "edges": edges}
+
+
+def render_landing():
+    s = render_stats()
     return (LANDING.replace("__GH__", GITHUB)
-            .replace("__PAGES__", str(pages))
-            .replace("__DOCS__", str(docs))
-            .replace("__EDGES__", str(edges)))
+            .replace("__PAGES__", str(s["pages"]))
+            .replace("__DOCS__", str(s["docs"]))
+            .replace("__EDGES__", str(s["edges"])))
 
 
 def render_index():
@@ -254,11 +259,14 @@ def render_graph():
 class Handler(BaseHTTPRequestHandler):
     server_version = "ia_sql-viewer/0.2"
 
-    def _send(self, code, body, ctype="text/html; charset=utf-8"):
+    def _send(self, code, body, ctype="text/html; charset=utf-8", cors=False):
         data = body.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        if cors:
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "public, max-age=60")
         self.end_headers()
         self.wfile.write(data)
 
@@ -267,6 +275,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path == "/health":
                 return self._send(200, "ok", "text/plain")
+            if u.path == "/stats.json":
+                return self._send(200, json.dumps(render_stats()),
+                                  "application/json", cors=True)
             if u.path == "/":
                 return self._send(200, render_landing())
             if u.path == "/wiki":

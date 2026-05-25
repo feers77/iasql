@@ -5,6 +5,9 @@
 viewer/*.live.service
 __pycache__/
 
+# Generated static site (published to the gh-pages branch)
+site/
+
 # Build artifacts
 *.o
 *.so
