@@ -11,6 +11,8 @@ audita esa wiki contra las fuentes en busca de alucinaciones.
 > Estado: **0.1 — prueba de concepto funcional.** Construido y probado en PostgreSQL 17.
 > [English here →](README.md)
 
+📖 **¿Recién llegas? Empieza por el [tutorial por perfil de usuario](docs/TUTORIAL.es.md).**
+
 ---
 
 ## La idea
