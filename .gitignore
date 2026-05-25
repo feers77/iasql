@@ -1,0 +1,11 @@
+# Secrets — never commit
+.env
+
+# Build artifacts
+*.o
+*.so
+*.bc
+*.bin
+build/
+results/
+*.log

@@ -1,0 +1,5 @@
+# IA-SQL extension control file
+comment = 'IA-SQL: in-database LLM Wiki (Karpathy pattern) for PostgreSQL'
+default_version = '0.1'
+module_pathname = '$libdir/ia_sql'
+relocatable = false
